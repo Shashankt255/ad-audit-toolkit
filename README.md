@@ -286,7 +286,7 @@ Register it in `AVAILABLE_MODULES` in `ad_audit.py` and it's ready to run.
 
 ## Disclaimer
 
-This tool is intended for **authorized security testing and educational purposes only**. Use it only on systems you have explicit written permission to test. Unauthorized access to computer systems is illegal. The authors are not responsible for any misuse or damage caused by this tool.
+This tool is intended for **authorized security testing and educational purposes only**. Use it only on systems you have explicit written permission to test. Unauthorized access to computer systems is illegal. The author is not responsible for any misuse or damage caused by this tool.
 
 Always obtain proper authorization before running any security assessment.
 
@@ -298,14 +298,6 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-## Contributing
+## Author
 
-Contributions are welcome. To add a new module:
-
-1. Create `modules/your_audit.py` extending `BaseModule`
-2. Implement `execute()` with read-only LDAP checks
-3. Register in `AVAILABLE_MODULES` in `ad_audit.py`
-4. Add MITRE ATT&CK mappings in `config.py` if applicable
-5. Submit a PR
-
-Please ensure all checks are **read-only** and **non-destructive**.
+**[Shashankt255](https://github.com/Shashankt255)**

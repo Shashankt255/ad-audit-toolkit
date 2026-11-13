@@ -1,7 +1,7 @@
 # AD Audit Toolkit — Handover Document
 
 **Version:** 1.0.0
-**Author:** Shashank Shekhar
+**Author:** Shashankt255
 **Date:** 2026-11-13
 **Location:** `/home/kali/ad-audit-toolkit/`
 

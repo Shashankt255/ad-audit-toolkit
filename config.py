@@ -1,6 +1,6 @@
 TOOL_NAME = "AD Audit Toolkit"
 TOOL_VERSION = "1.0.0"
-TOOL_AUTHOR = "Shashank Shekhar"
+TOOL_AUTHOR = "Shashankt255"
 
 SEVERITY_CRITICAL = "CRITICAL"
 SEVERITY_HIGH = "HIGH"
