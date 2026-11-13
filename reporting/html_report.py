@@ -1,10 +1,14 @@
 import os
+import json
+import csv
+import io
 from datetime import datetime
 from jinja2 import Template
 from config import (
     TOOL_NAME, TOOL_VERSION, TOOL_AUTHOR,
     STATUS_PASS, STATUS_FAIL, STATUS_WARN, STATUS_INFO, STATUS_ERROR, STATUS_SKIP,
     SEVERITY_CRITICAL, SEVERITY_HIGH, SEVERITY_MEDIUM, SEVERITY_LOW, SEVERITY_INFO,
+    MITRE_MAPPING, RISK_WEIGHTS,
 )
 
 REPORT_TEMPLATE = r"""<!DOCTYPE html>
@@ -33,6 +37,11 @@ REPORT_TEMPLATE = r"""<!DOCTYPE html>
   --sev-medium: #e67e22;
   --sev-low: #f1c40f;
   --sev-info: #3498db;
+  --grade-a: #2ecc71;
+  --grade-b: #27ae60;
+  --grade-c: #f39c12;
+  --grade-d: #e67e22;
+  --grade-f: #e74c3c;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
@@ -57,6 +66,23 @@ h3 { font-size: 1.1rem; margin: 1rem 0 .5rem; }
 .stat-card.warn .num { color: var(--warn); }
 .stat-card.info .num { color: var(--info-clr); }
 .stat-card.total .num { color: var(--accent); }
+
+/* Risk score card */
+.risk-score-card { background: var(--card); border: 2px solid var(--border); border-radius: 16px; padding: 24px; text-align: center; margin: 1.5rem 0; display: inline-block; min-width: 200px; }
+.risk-score-card .grade { font-size: 4rem; font-weight: 800; line-height: 1; }
+.risk-score-card .score-num { font-size: 1.1rem; color: var(--text-muted); margin-top: 4px; }
+.risk-score-card .score-label { font-size: .8rem; color: var(--text-muted); margin-top: 2px; }
+.grade-a { color: var(--grade-a); border-color: var(--grade-a); }
+.grade-b { color: var(--grade-b); border-color: var(--grade-b); }
+.grade-c { color: var(--grade-c); border-color: var(--grade-c); }
+.grade-d { color: var(--grade-d); border-color: var(--grade-d); }
+.grade-f { color: var(--grade-f); border-color: var(--grade-f); }
+
+/* Top risks */
+.top-risks { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin: 1.5rem 0; }
+.top-risks ol { padding-left: 20px; }
+.top-risks li { padding: 6px 0; font-size: .9rem; }
+.top-risks li strong { color: var(--fail); }
 
 /* Severity bar chart */
 .sev-chart { margin: 1.5rem 0; }
@@ -87,6 +113,8 @@ tbody tr:hover { background: var(--surface); }
 .badge-medium { background: rgba(230,126,34,.15); color: var(--sev-medium); }
 .badge-low { background: rgba(241,196,15,.15); color: var(--sev-low); }
 .badge-sev-info { background: rgba(52,152,219,.15); color: var(--sev-info); }
+.mitre-link { color: var(--accent); text-decoration: none; font-family: monospace; font-size: .82rem; }
+.mitre-link:hover { text-decoration: underline; }
 
 /* Finding cards */
 .finding-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
@@ -97,7 +125,7 @@ tbody tr:hover { background: var(--surface); }
 .finding-card.sev-border-info { border-left: 4px solid var(--sev-info); }
 .finding-title { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .finding-title h3 { margin: 0; font-size: 1.05rem; }
-.finding-badges { display: flex; gap: 6px; flex-shrink: 0; }
+.finding-badges { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; }
 .finding-section { margin-top: 12px; }
 .finding-section .sec-title { font-size: .78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; font-weight: 600; }
 .finding-section p, .finding-section pre { font-size: .88rem; }
@@ -108,11 +136,24 @@ tbody tr:hover { background: var(--surface); }
 .ref-link { color: var(--accent); text-decoration: none; font-size: .86rem; }
 .ref-link:hover { text-decoration: underline; }
 .cve-tag { background: rgba(192,57,43,.2); color: #e74c3c; padding: 2px 8px; border-radius: 4px; font-size: .8rem; font-weight: 600; font-family: monospace; }
+.mitre-tag { background: rgba(108,140,255,.15); color: var(--accent); padding: 2px 8px; border-radius: 4px; font-size: .8rem; font-weight: 600; font-family: monospace; }
+
+/* Attack paths */
+.attack-path { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 22px; margin-bottom: 14px; border-left: 4px solid var(--sev-critical); }
+.attack-path .path-title { font-weight: 700; font-size: 1rem; margin-bottom: 8px; }
+.attack-path .path-chain { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: .92rem; color: var(--warn); padding: 8px 12px; background: var(--surface); border-radius: 6px; margin-bottom: 8px; }
+.attack-path .path-desc { font-size: .86rem; color: var(--text-muted); }
+.path-severity { font-size: .75rem; font-weight: 600; padding: 2px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px; }
+.path-sev-critical { background: rgba(192,57,43,.2); color: var(--sev-critical); }
+.path-sev-high { background: rgba(231,76,60,.15); color: var(--sev-high); }
 
 /* Risk summary */
 .risk-group { margin-bottom: 1.5rem; }
 .risk-group-header { display: flex; align-items: center; gap: 10px; margin-bottom: .5rem; }
 .risk-count { font-size: 1.3rem; font-weight: 700; }
+
+/* Module timing */
+.timing-table td:last-child { text-align: right; font-family: monospace; }
 
 /* Footer */
 .footer { margin-top: 3rem; padding: 1.5rem; background: var(--surface); border-radius: 10px; border: 1px solid var(--border); text-align: center; color: var(--text-muted); font-size: .82rem; }
@@ -126,7 +167,7 @@ tbody tr:hover { background: var(--surface); }
 }
 @media print {
   body { background: #fff; color: #111; }
-  .header, .stat-card, .finding-card, .footer, .meta-item { border-color: #ccc; background: #fafafa; }
+  .header, .stat-card, .finding-card, .footer, .meta-item, .risk-score-card, .top-risks, .attack-path { border-color: #ccc; background: #fafafa; }
   .sev-bar { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
 }
 </style>
@@ -149,13 +190,33 @@ tbody tr:hover { background: var(--surface); }
 
 <!-- Executive Summary -->
 <h2 id="summary">Executive Summary</h2>
-<div class="stats">
-  <div class="stat-card total"><div class="num">{{ counts.total }}</div><div class="lbl">Total Tests</div></div>
-  <div class="stat-card pass"><div class="num">{{ counts.pass }}</div><div class="lbl">Passed</div></div>
-  <div class="stat-card fail"><div class="num">{{ counts.fail }}</div><div class="lbl">Failed</div></div>
-  <div class="stat-card warn"><div class="num">{{ counts.warn }}</div><div class="lbl">Warnings</div></div>
-  <div class="stat-card info"><div class="num">{{ counts.info }}</div><div class="lbl">Informational</div></div>
+
+<div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap;">
+  <div class="risk-score-card grade-{{ risk_grade_cls }}">
+    <div class="grade" style="color:var(--grade-{{ risk_grade_cls }});">{{ risk_grade }}</div>
+    <div class="score-num">{{ risk_score }} / 100</div>
+    <div class="score-label">Security Score</div>
+  </div>
+  <div class="stats" style="flex:1;">
+    <div class="stat-card total"><div class="num">{{ counts.total }}</div><div class="lbl">Total Tests</div></div>
+    <div class="stat-card pass"><div class="num">{{ counts.pass }}</div><div class="lbl">Passed</div></div>
+    <div class="stat-card fail"><div class="num">{{ counts.fail }}</div><div class="lbl">Failed</div></div>
+    <div class="stat-card warn"><div class="num">{{ counts.warn }}</div><div class="lbl">Warnings</div></div>
+    <div class="stat-card info"><div class="num">{{ counts.info }}</div><div class="lbl">Informational</div></div>
+  </div>
 </div>
+
+{% if top_risks %}
+<h3>Top {{ top_risks|length }} Critical Risks</h3>
+<div class="top-risks">
+  <ol>
+  {% for f in top_risks %}
+    <li><strong>{{ f.test_id }}</strong> &mdash; {{ f.test_name }} <span class="badge badge-{{ sev_class(f.severity) }}" style="font-size:.7rem;">{{ f.severity }}</span>{% if f.cve %} <span class="cve-tag">{{ f.cve }}</span>{% endif %}
+    <br><span style="color:var(--text-muted);font-size:.85rem;">{{ f.description[:150] }}{% if f.description|length > 150 %}...{% endif %}</span></li>
+  {% endfor %}
+  </ol>
+</div>
+{% endif %}
 
 <h3>Severity Distribution</h3>
 <div class="sev-chart">
@@ -174,7 +235,7 @@ tbody tr:hover { background: var(--surface); }
 <div style="overflow-x:auto;">
 <table>
 <thead>
-<tr><th>#</th><th>Test ID</th><th>Test Name</th><th>Category</th><th>Status</th><th>Severity</th></tr>
+<tr><th>#</th><th>Test ID</th><th>Test Name</th><th>Category</th><th>Status</th><th>Severity</th><th>MITRE ATT&amp;CK</th></tr>
 </thead>
 <tbody>
 {% for i, f in enumerated_findings %}
@@ -185,6 +246,7 @@ tbody tr:hover { background: var(--surface); }
   <td>{{ f.category }}</td>
   <td><span class="badge badge-{{ f.status|lower }}">{{ f.status }}</span></td>
   <td><span class="badge badge-{{ sev_class(f.severity) }}">{{ f.severity }}</span></td>
+  <td>{% if mitre_map.get(f.test_id) %}<a class="mitre-link" href="{{ mitre_url(mitre_map[f.test_id]) }}" target="_blank" rel="noopener">{{ mitre_map[f.test_id] }}</a>{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>
@@ -202,12 +264,26 @@ tbody tr:hover { background: var(--surface); }
   </div>
   <ul style="list-style:none;padding:0;">
   {% for f in sev_findings %}
-    <li style="padding:4px 0;font-size:.9rem;">&bull; <strong>{{ f.test_id }}</strong> &mdash; {{ f.test_name }}{% if f.cve %} <span class="cve-tag">{{ f.cve }}</span>{% endif %}</li>
+    <li style="padding:4px 0;font-size:.9rem;">&bull; <strong>{{ f.test_id }}</strong> &mdash; {{ f.test_name }}{% if f.cve %} <span class="cve-tag">{{ f.cve }}</span>{% endif %}{% if mitre_map.get(f.test_id) %} <span class="mitre-tag">{{ mitre_map[f.test_id] }}</span>{% endif %}</li>
   {% endfor %}
   </ul>
 </div>
 {% endif %}
 {% endfor %}
+
+<!-- Attack Paths -->
+{% if attack_paths %}
+<h2 id="attack-paths">Attack Paths</h2>
+<p style="color:var(--text-muted);font-size:.9rem;margin-bottom:1rem;">Potential attack chains derived from combining multiple findings.</p>
+{% for path in attack_paths %}
+<div class="attack-path">
+  <span class="path-severity path-sev-{{ path.severity|lower }}">{{ path.severity }}</span>
+  <div class="path-title">{{ path.title }}</div>
+  <div class="path-chain">{{ path.chain }}</div>
+  <div class="path-desc">{{ path.description }}</div>
+</div>
+{% endfor %}
+{% endif %}
 
 <!-- Detailed Findings -->
 <h2 id="findings">Detailed Findings</h2>
@@ -219,6 +295,7 @@ tbody tr:hover { background: var(--surface); }
       <span class="badge badge-{{ f.status|lower }}">{{ f.status }}</span>
       <span class="badge badge-{{ sev_class(f.severity) }}">{{ f.severity }}</span>
       {% if f.cve %}<span class="cve-tag">{{ f.cve }}</span>{% endif %}
+      {% if mitre_map.get(f.test_id) %}<a class="mitre-tag" href="{{ mitre_url(mitre_map[f.test_id]) }}" target="_blank" rel="noopener">{{ mitre_map[f.test_id] }}</a>{% endif %}
     </div>
   </div>
 
@@ -281,6 +358,19 @@ tbody tr:hover { background: var(--surface); }
   <div class="meta-item"><div class="label">Forest</div><div class="value">{{ metadata.forest }}</div></div>
 </div>
 
+{% if module_timings %}
+<h3 style="margin-top:1.5rem;">Module Execution Timing</h3>
+<table class="timing-table">
+<thead><tr><th>Module</th><th>Duration</th></tr></thead>
+<tbody>
+{% for mt in module_timings %}
+<tr><td>{{ mt.name }}</td><td>{{ mt.duration }}s</td></tr>
+{% endfor %}
+<tr style="font-weight:700;border-top:2px solid var(--border);"><td>Total</td><td>{{ metadata.duration }}</td></tr>
+</tbody>
+</table>
+{% endif %}
+
 <div class="footer">
   <p>{{ tool_name }} v{{ tool_version }} &mdash; Active Directory Security Assessment</p>
   <p>This report is confidential and intended solely for the authorized recipient.</p>
@@ -304,7 +394,113 @@ def _sev_class(severity):
     return mapping.get(severity, "sev-info")
 
 
-def generate_report(findings, metadata, output_path):
+def _mitre_url(technique_id):
+    parts = technique_id.replace(".", "/")
+    return f"https://attack.mitre.org/techniques/{parts}/"
+
+
+def _calculate_risk_score(findings):
+    actionable = [f for f in findings if f.status in (STATUS_FAIL, STATUS_WARN)]
+    if not findings:
+        return 100, "A"
+    total_weight = sum(RISK_WEIGHTS.get(f.severity, 0) for f in actionable)
+    max_possible = len(findings) * RISK_WEIGHTS.get(SEVERITY_CRITICAL, 10)
+    if max_possible == 0:
+        return 100, "A"
+    score = max(0, round(100 - (total_weight / max_possible * 100)))
+    if score >= 90:
+        grade = "A"
+    elif score >= 75:
+        grade = "B"
+    elif score >= 60:
+        grade = "C"
+    elif score >= 40:
+        grade = "D"
+    else:
+        grade = "F"
+    return score, grade
+
+
+def _detect_attack_paths(findings):
+    fmap = {}
+    for f in findings:
+        if f.status in (STATUS_FAIL, STATUS_WARN):
+            fmap[f.test_id] = f
+
+    paths = []
+
+    if "USR-009" in fmap:
+        paths.append({
+            "title": "Kerberoasting to Domain Admin",
+            "chain": "Kerberoastable Account → Offline Hash Crack → Service Account Compromise → Lateral Movement",
+            "description": f"Found {len(fmap['USR-009'].affected_objects)} Kerberoastable account(s). If any are privileged, offline cracking yields DA access.",
+            "severity": "CRITICAL",
+        })
+
+    if "KRB-002" in fmap or "USR-005" in fmap:
+        paths.append({
+            "title": "AS-REP Roasting to Account Compromise",
+            "chain": "AS-REP Roastable Account → Request AS-REP → Offline Crack → Account Takeover",
+            "description": "Accounts without Kerberos pre-authentication can be targeted for offline password cracking.",
+            "severity": "HIGH",
+        })
+
+    smb_sign_off = "SMB-001" in fmap
+    ldap_sign_off = "LDAP-001" in fmap
+    petitpotam = "CVE-002" in fmap
+
+    if smb_sign_off and petitpotam:
+        paths.append({
+            "title": "PetitPotam → NTLM Relay → Domain Compromise",
+            "chain": "PetitPotam Coerce (CVE-2021-36942) → NTLM Relay (SMB signing off) → AD CS / LDAP → DCSync → Domain Compromise",
+            "description": "SMB signing is not enforced and EFS RPC is available. An attacker can coerce DC authentication and relay it.",
+            "severity": "CRITICAL",
+        })
+
+    maq_fail = "MISC-002" in fmap or "CVE-004" in fmap
+    if maq_fail and ldap_sign_off:
+        paths.append({
+            "title": "KrbRelayUp / RBCD Relay Chain",
+            "chain": "Create Machine Account (MAQ>0) → Kerberos Relay (LDAP signing off) → RBCD Write → S4U2Proxy → Admin Access",
+            "description": "MachineAccountQuota allows users to add computers, and LDAP signing is not enforced, enabling KrbRelayUp.",
+            "severity": "CRITICAL",
+        })
+
+    if "ADCS-003" in fmap:
+        paths.append({
+            "title": "AD CS ESC1 → Domain Admin Certificate",
+            "chain": "Vulnerable Template (ENROLLEE_SUPPLIES_SUBJECT) → Request Cert as DA → Authenticate as DA → Domain Compromise",
+            "description": "Certificate template allows low-privileged users to specify the subject, enabling impersonation of any principal.",
+            "severity": "CRITICAL",
+        })
+
+    if "DEL-001" in fmap:
+        paths.append({
+            "title": "Unconstrained Delegation Abuse",
+            "chain": "Compromise Delegated Host → Capture Incoming TGTs → Impersonate Captured Users → Lateral Movement",
+            "description": "Servers with unconstrained delegation cache TGTs of connecting users. Compromising such a server yields those TGTs.",
+            "severity": "HIGH",
+        })
+
+    if "ACL-001" in fmap:
+        paths.append({
+            "title": "Non-Default DCSync Rights",
+            "chain": "Compromise Account with Replication Rights → DCSync → Extract All Password Hashes → Golden Ticket",
+            "description": "Non-default principals with DCSync rights can replicate password data from DCs.",
+            "severity": "CRITICAL",
+        })
+
+    return paths
+
+
+def _get_top_risks(findings, count=5):
+    sev_order = {SEVERITY_CRITICAL: 0, SEVERITY_HIGH: 1, SEVERITY_MEDIUM: 2, SEVERITY_LOW: 3, SEVERITY_INFO: 4}
+    actionable = [f for f in findings if f.status in (STATUS_FAIL, STATUS_WARN)]
+    actionable.sort(key=lambda f: (sev_order.get(f.severity, 9), 0 if f.status == STATUS_FAIL else 1))
+    return actionable[:count]
+
+
+def generate_report(findings, metadata, output_path, module_timings=None):
     counts = {
         "total": len(findings),
         "pass": sum(1 for f in findings if f.status == STATUS_PASS),
@@ -343,6 +539,13 @@ def generate_report(findings, metadata, output_path):
 
     actionable_findings = [f for f in findings if f.status in (STATUS_FAIL, STATUS_WARN)]
 
+    risk_score, risk_grade = _calculate_risk_score(findings)
+    grade_cls_map = {"A": "a", "B": "b", "C": "c", "D": "d", "F": "f"}
+    risk_grade_cls = grade_cls_map.get(risk_grade, "f")
+
+    top_risks = _get_top_risks(findings)
+    attack_paths = _detect_attack_paths(findings)
+
     metadata.setdefault("report_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     metadata.setdefault("protocol", "LDAP")
     metadata.setdefault("domain_dn", "")
@@ -364,10 +567,89 @@ def generate_report(findings, metadata, output_path):
         risk_groups=risk_groups,
         actionable_findings=actionable_findings,
         sev_class=_sev_class,
+        mitre_map=MITRE_MAPPING,
+        mitre_url=_mitre_url,
+        risk_score=risk_score,
+        risk_grade=risk_grade,
+        risk_grade_cls=risk_grade_cls,
+        top_risks=top_risks,
+        attack_paths=attack_paths,
+        module_timings=module_timings or [],
     )
 
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True) if os.path.dirname(output_path) else None
+    if os.path.dirname(output_path):
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as fh:
         fh.write(html)
+
+    return output_path
+
+
+def generate_json_report(findings, metadata, output_path):
+    sev_order = {SEVERITY_CRITICAL: 0, SEVERITY_HIGH: 1, SEVERITY_MEDIUM: 2, SEVERITY_LOW: 3, SEVERITY_INFO: 4}
+    risk_score, risk_grade = _calculate_risk_score(findings)
+
+    report = {
+        "tool": TOOL_NAME,
+        "version": TOOL_VERSION,
+        "metadata": metadata,
+        "risk_score": risk_score,
+        "risk_grade": risk_grade,
+        "summary": {
+            "total": len(findings),
+            "pass": sum(1 for f in findings if f.status == STATUS_PASS),
+            "fail": sum(1 for f in findings if f.status == STATUS_FAIL),
+            "warn": sum(1 for f in findings if f.status == STATUS_WARN),
+            "info": sum(1 for f in findings if f.status == STATUS_INFO),
+        },
+        "findings": [],
+    }
+
+    for f in sorted(findings, key=lambda x: (sev_order.get(x.severity, 9), x.test_id)):
+        entry = {
+            "test_id": f.test_id,
+            "test_name": f.test_name,
+            "category": f.category,
+            "status": f.status,
+            "severity": f.severity,
+            "description": f.description,
+            "observation": f.observation,
+            "remediation": f.remediation,
+            "affected_objects": f.affected_objects,
+            "affected_count": len(f.affected_objects),
+        }
+        if f.cve:
+            entry["cve"] = f.cve
+        mitre = MITRE_MAPPING.get(f.test_id) or getattr(f, "mitre_technique", None)
+        if mitre:
+            entry["mitre_technique"] = mitre
+        if f.references:
+            entry["references"] = f.references
+        report["findings"].append(entry)
+
+    with open(output_path, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2, default=str)
+
+    return output_path
+
+
+def generate_csv_report(findings, output_path):
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "Test ID", "Test Name", "Category", "Status", "Severity",
+        "Description", "Observation", "Remediation", "Affected Count",
+        "CVE", "MITRE ATT&CK",
+    ])
+    for f in findings:
+        mitre = MITRE_MAPPING.get(f.test_id) or getattr(f, "mitre_technique", None) or ""
+        writer.writerow([
+            f.test_id, f.test_name, f.category, f.status, f.severity,
+            f.description, f.observation, f.remediation,
+            len(f.affected_objects), f.cve or "", mitre,
+        ])
+
+    with open(output_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(buf.getvalue())
 
     return output_path

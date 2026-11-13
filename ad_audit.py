@@ -4,8 +4,12 @@ import argparse
 import sys
 import os
 import time
+import json
+import csv
+import random
 import getpass
 from datetime import datetime
+from dataclasses import asdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -42,21 +46,25 @@ Examples:
     parser.add_argument("--timeout", type=int, default=10, help="Connection timeout in seconds")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--hashes", help="NTLM hash for pass-the-hash (LM:NT format)")
+    parser.add_argument("-k", "--kerberos", action="store_true", help="Use Kerberos authentication (requires valid TGT via kinit)")
+    parser.add_argument("--stealth", action="store_true", help="Stealth mode: add random delays between modules to reduce detection")
+    parser.add_argument("--json-output", help="Path for JSON report output (auto-generated alongside HTML if omitted)")
+    parser.add_argument("--csv-output", help="Path for CSV report output")
     parser.add_argument("--list-modules", action="store_true", help="List available modules and exit")
     return parser.parse_args()
 
 
 AVAILABLE_MODULES = {
-    "domain_recon": ("modules.domain_recon", "DomainRecon"),
-    "user_audit": ("modules.user_audit", "UserAudit"),
-    "group_audit": ("modules.group_audit", "GroupAudit"),
-    "computer_audit": ("modules.computer_audit", "ComputerAudit"),
+    "domain_recon": ("modules.domain_recon", "DomainReconModule"),
+    "user_audit": ("modules.user_audit", "UserAuditModule"),
+    "group_audit": ("modules.group_audit", "GroupAuditModule"),
+    "computer_audit": ("modules.computer_audit", "ComputerAuditModule"),
     "kerberos": ("modules.kerberos_audit", "KerberosAudit"),
-    "acl": ("modules.acl_audit", "ACLAudit"),
+    "acl": ("modules.acl_audit", "AclAuditModule"),
     "adcs": ("modules.adcs_audit", "ADCSAudit"),
     "smb": ("modules.smb_audit", "SMBAudit"),
     "ldap": ("modules.ldap_audit", "LDAPAudit"),
-    "password": ("modules.password_audit", "PasswordAudit"),
+    "password": ("modules.password_audit", "PasswordAuditModule"),
     "delegation": ("modules.delegation_audit", "DelegationAudit"),
     "dns": ("modules.dns_audit", "DNSAudit"),
     "cve": ("modules.cve_audit", "CVEAudit"),
@@ -85,7 +93,7 @@ def banner():
 
 
 def connect_ldap(args):
-    from ldap3 import Server, Connection, ALL, NTLM, Tls
+    from ldap3 import Server, Connection, ALL, NTLM, SASL, Tls
     import ssl
 
     port = args.port
@@ -106,6 +114,23 @@ def connect_ldap(args):
         connect_timeout=args.timeout,
         tls=tls_config,
     )
+
+    if args.kerberos:
+        try:
+            conn = Connection(
+                server,
+                authentication=SASL,
+                sasl_mechanism="GSSAPI",
+                auto_bind=True,
+                receive_timeout=args.timeout,
+            )
+            return conn
+        except Exception as e:
+            raise RuntimeError(
+                f"Kerberos authentication failed: {e}\n"
+                "Ensure you have a valid TGT (run 'kinit username@DOMAIN'). "
+                "Fallback: remove -k and use NTLM with -p or --hashes."
+            )
 
     domain_user = f"{args.domain}\\{args.username}"
 
@@ -217,13 +242,17 @@ def main():
         print(f"Run specific: python ad_audit.py -d DOMAIN -u USER -dc DC_IP -m kerberos,acl,adcs")
         sys.exit(0)
 
-    if not args.password and not args.hashes:
+    if not args.kerberos and not args.password and not args.hashes:
         args.password = getpass.getpass(f"Password for {args.domain}\\{args.username}: ")
 
-    print_msg(console, f"\n[bold]Connecting to {args.dc_ip}...[/bold]")
+    if args.stealth:
+        print_msg(console, "[yellow]  ! Stealth mode enabled — random delays between modules[/yellow]")
+
+    auth_method = "Kerberos" if args.kerberos else ("LDAPS" if args.use_ldaps else "LDAP/NTLM")
+    print_msg(console, f"\n[bold]Connecting to {args.dc_ip} ({auth_method})...[/bold]")
     try:
         conn = connect_ldap(args)
-        print_msg(console, f"[green]  + Connected via {'LDAPS' if args.use_ldaps else 'LDAP'}[/green]")
+        print_msg(console, f"[green]  + Connected via {auth_method}[/green]")
     except Exception as e:
         print_msg(console, f"[red]  - Connection failed: {e}[/red]")
         sys.exit(1)
@@ -243,6 +272,7 @@ def main():
         "timeout": args.timeout,
         "verbose": args.verbose,
         "use_ldaps": args.use_ldaps,
+        "stealth": args.stealth,
     }
 
     selected = args.modules.split(",") if args.modules else None
@@ -252,7 +282,11 @@ def main():
     all_findings = []
     module_results = []
 
-    for mod_name, mod_cls in module_list:
+    for idx, (mod_name, mod_cls) in enumerate(module_list):
+        if args.stealth and idx > 0:
+            delay = random.uniform(1.0, 3.0)
+            print_msg(console, f"  [dim]  (stealth delay: {delay:.1f}s)[/dim]")
+            time.sleep(delay)
         print_msg(console, f"  [dim]> {mod_cls.MODULE_NAME}...[/dim]")
         instance = mod_cls(conn, domain_info, options)
         findings = instance.run()
@@ -285,8 +319,8 @@ def main():
     print_msg(console, f"  [red]CRITICAL: {crit}[/red]  [yellow]HIGH: {high}[/yellow]  MEDIUM: {med}  LOW: {low}  INFO: {info_count}")
     print_msg(console, f"  FAIL: {fail}  WARN: {warn}  PASS: {pass_count}")
 
-    print_msg(console, f"\n[bold]Generating report...[/bold]")
-    from reporting.html_report import generate_report
+    print_msg(console, f"\n[bold]Generating reports...[/bold]")
+    from reporting.html_report import generate_report, generate_json_report, generate_csv_report
 
     total_duration = sum(m["duration"] for m in module_results)
     metadata = {
@@ -301,9 +335,25 @@ def main():
         "forest": domain_info.get("forest_name", domain_info["domain_name"]),
     }
 
+    module_timings = [{"name": m["name"], "duration": m["duration"]} for m in module_results]
+
     output_path = args.output
-    generate_report(all_findings, metadata, output_path)
-    print_msg(console, f"[green]  + Report saved to: {os.path.abspath(output_path)}[/green]")
+    generate_report(all_findings, metadata, output_path, module_timings=module_timings)
+    print_msg(console, f"[green]  + HTML report: {os.path.abspath(output_path)}[/green]")
+
+    json_path = args.json_output if hasattr(args, "json_output") and args.json_output else None
+    if not json_path:
+        base, _ = os.path.splitext(output_path)
+        json_path = base + ".json"
+    generate_json_report(all_findings, metadata, json_path)
+    print_msg(console, f"[green]  + JSON report: {os.path.abspath(json_path)}[/green]")
+
+    csv_path = args.csv_output if hasattr(args, "csv_output") and args.csv_output else None
+    if not csv_path:
+        base, _ = os.path.splitext(output_path)
+        csv_path = base + ".csv"
+    generate_csv_report(all_findings, csv_path)
+    print_msg(console, f"[green]  + CSV report:  {os.path.abspath(csv_path)}[/green]")
 
     conn.unbind()
     print_msg(console, "\n[dim]Done. Stay safe![/dim]")

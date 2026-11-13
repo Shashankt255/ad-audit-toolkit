@@ -10,6 +10,7 @@ class GPOAudit(BaseModule):
         self._enumerate_gpos()
         self._check_gpo_permissions()
         self._check_gpp_passwords()
+        self._check_wsus()
 
     def _enumerate_gpos(self):
         entries = self.ldap_search(
@@ -116,8 +117,8 @@ class GPOAudit(BaseModule):
             test_id="GPO-003",
             test_name="GPP Passwords (cpassword)",
             category=self.MODULE_NAME,
-            status=STATUS_WARN,
-            severity=SEVERITY_HIGH,
+            status=STATUS_INFO,
+            severity=SEVERITY_MEDIUM,
             description=(
                 "Group Policy Preferences (GPP) may contain encrypted passwords (cpassword) "
                 "that can be trivially decrypted. The encryption key was published by Microsoft."
@@ -135,3 +136,55 @@ class GPOAudit(BaseModule):
             details={"gpo_paths": gpo_paths[:20]},
             cve="MS14-025",
         )
+
+    def _check_wsus(self):
+        wsus_servers = self.ldap_search(
+            self.get_domain_dn(),
+            "(&(objectCategory=computer)(|(servicePrincipalName=*wsus*)(servicePrincipalName=*WSUS*)(cn=*WSUS*)(cn=*wsus*)))",
+            attributes=["cn", "dNSHostName", "servicePrincipalName", "operatingSystem"],
+        )
+
+        if wsus_servers:
+            server_list = []
+            for s in wsus_servers:
+                name = str(getattr(s, "cn", "?"))
+                dns = str(getattr(s, "dNSHostName", "N/A"))
+                server_list.append(f"{name} ({dns})")
+
+            self.add_finding(
+                test_id="GPO-004",
+                test_name="WSUS Server Configuration",
+                category=self.MODULE_NAME,
+                status=STATUS_WARN,
+                severity=SEVERITY_MEDIUM,
+                description=(
+                    "WSUS (Windows Server Update Services) server(s) detected in the domain. "
+                    "If WSUS is configured to use HTTP instead of HTTPS, it is vulnerable to "
+                    "WSUS poisoning attacks that can deliver malicious updates."
+                ),
+                observation=(
+                    f"Found {len(server_list)} potential WSUS server(s). "
+                    "Verify WSUS uses HTTPS (port 8531) not HTTP (port 8530). "
+                    "Check GPO settings: Computer Configuration > Policies > Administrative "
+                    "Templates > Windows Components > Windows Update > Specify intranet "
+                    "Microsoft update service location."
+                ),
+                affected_objects=server_list,
+                remediation=(
+                    "Configure WSUS to use HTTPS (SSL/TLS). Update GPO WUServer setting "
+                    "to use https:// URL. Apply KB5014754 and enable TLS on WSUS IIS bindings."
+                ),
+            )
+        else:
+            self.add_finding(
+                test_id="GPO-004",
+                test_name="WSUS Server Configuration",
+                category=self.MODULE_NAME,
+                status=STATUS_INFO,
+                severity=SEVERITY_INFO,
+                description="No WSUS servers detected via LDAP enumeration.",
+                observation=(
+                    "No computers with WSUS-related SPNs or names found. "
+                    "WSUS may still be deployed — verify manually if applicable."
+                ),
+            )

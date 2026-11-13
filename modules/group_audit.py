@@ -14,6 +14,7 @@ class GroupAuditModule(BaseModule):
         self._large_groups()
         self._groups_with_managers()
         self._builtin_group_membership()
+        self._protected_users_coverage()
 
     def _fetch_all_groups(self):
         return self.ldap_search(
@@ -209,3 +210,87 @@ class GroupAuditModule(BaseModule):
             remediation="Review membership of built-in operator groups. These groups grant local admin "
                         "or dangerous privileges on DCs. Remove unnecessary members.",
         )
+
+    # GRP-007
+    def _protected_users_coverage(self):
+        def _get_group_member_dns(group_cn):
+            for g in self.all_groups:
+                if self._cn(g) == group_cn:
+                    return self._members(g)
+            results = self.ldap_search(
+                self.get_domain_dn(),
+                f"(&(objectClass=group)(cn={group_cn}))",
+                attributes=["member"],
+            )
+            if results:
+                raw = getattr(results[0], "member", None)
+                if raw:
+                    if hasattr(raw, "values"):
+                        return [str(m) for m in raw.values]
+                    elif raw.value:
+                        return [str(raw.value)]
+            return []
+
+        protected_members = set(_get_group_member_dns("Protected Users"))
+
+        priv_groups = ["Domain Admins", "Enterprise Admins", "Schema Admins"]
+        all_priv_dns = {}
+        for pg in priv_groups:
+            for member_dn in _get_group_member_dns(pg):
+                cn = member_dn.split(",")[0].replace("CN=", "") if "CN=" in member_dn else member_dn
+                if member_dn not in all_priv_dns:
+                    all_priv_dns[member_dn] = {"name": cn, "groups": []}
+                all_priv_dns[member_dn]["groups"].append(pg)
+
+        not_protected = []
+        for dn, info in all_priv_dns.items():
+            if dn not in protected_members:
+                not_protected.append(
+                    f"{info['name']} ({', '.join(info['groups'])}) — NOT in Protected Users"
+                )
+
+        total_priv = len(all_priv_dns)
+        protected_count = total_priv - len(not_protected)
+
+        if not all_priv_dns:
+            self.add_finding(
+                test_id="GRP-007",
+                test_name="Protected Users Coverage",
+                category=self.MODULE_NAME,
+                status=STATUS_INFO,
+                severity=SEVERITY_INFO,
+                description="Protected Users group prevents NTLM authentication, Kerberos delegation, "
+                            "and credential caching for its members.",
+                observation="No privileged group members found to check.",
+            )
+            return
+
+        if not_protected:
+            self.add_finding(
+                test_id="GRP-007",
+                test_name="Protected Users Coverage",
+                category=self.MODULE_NAME,
+                status=STATUS_FAIL,
+                severity=SEVERITY_HIGH,
+                description="The Protected Users group prevents NTLM authentication, Kerberos delegation, "
+                            "DES/RC4 encryption, and credential caching. All privileged users should be members.",
+                observation=(
+                    f"{len(not_protected)}/{total_priv} privileged user(s) are NOT in Protected Users. "
+                    f"These accounts are vulnerable to NTLM relay, credential theft, and delegation attacks."
+                ),
+                affected_objects=not_protected,
+                remediation="Add all Domain Admins, Enterprise Admins, and Schema Admins to the "
+                            "Protected Users group. Test applications first as Protected Users "
+                            "prevents NTLM auth and delegation for those accounts.",
+                references=["https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/protected-users-security-group"],
+            )
+        else:
+            self.add_finding(
+                test_id="GRP-007",
+                test_name="Protected Users Coverage",
+                category=self.MODULE_NAME,
+                status=STATUS_PASS,
+                severity=SEVERITY_INFO,
+                description="All privileged users (DA/EA/SA) are in the Protected Users group.",
+                observation=f"{protected_count}/{total_priv} privileged user(s) are in Protected Users.",
+            )

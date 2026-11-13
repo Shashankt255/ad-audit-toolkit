@@ -73,3 +73,38 @@ KERBEROS_ENCRYPTION_TYPES = {
     0x17: "RC4-HMAC",
     0x18: "RC4-HMAC-EXP",
 }
+
+MITRE_MAPPING = {
+    "KRB-001": "T1558.003",
+    "KRB-002": "T1558.004",
+    "USR-005": "T1558.004",
+    "USR-009": "T1558.003",
+    "ACL-001": "T1003.006",
+    "DEL-001": "T1550.003",
+    "DEL-002": "T1550.003",
+    "DEL-004": "T1550.003",
+    "CVE-001": "T1210",
+    "CVE-002": "T1187",
+    "CVE-003": "T1210",
+    "CVE-006": "T1557.001",
+    "SMB-001": "T1557.001",
+    "SMB-002": "T1021.002",
+    "ADCS-003": "T1649",
+    "ADCS-004": "T1649",
+    "ADCS-005": "T1649",
+    "ADCS-007": "T1649",
+    "ADCS-008": "T1649",
+    "GPO-003": "T1552.006",
+    "CMP-005": "T1134",
+    "MISC-005": "T1134.005",
+    "CVE-004": "T1078",
+    "CVE-005": "T1649",
+}
+
+RISK_WEIGHTS = {
+    SEVERITY_CRITICAL: 10,
+    SEVERITY_HIGH: 7,
+    SEVERITY_MEDIUM: 4,
+    SEVERITY_LOW: 1,
+    SEVERITY_INFO: 0,
+}

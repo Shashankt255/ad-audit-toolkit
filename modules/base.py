@@ -18,6 +18,7 @@ class Finding:
     affected_objects: list = field(default_factory=list)
     details: dict = field(default_factory=dict)
     cve: Optional[str] = None
+    mitre_technique: Optional[str] = None
     references: list = field(default_factory=list)
 
 
