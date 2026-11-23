@@ -298,6 +298,13 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
+## Related Tools
+
+| Tool | What it does |
+|---|---|
+| [**GLASSCAGE**](https://github.com/Shashankt255/glasscage) | LLM & agentic AI security assessment — OWASP LLM Top 10 probes, AI Attack Knowledge Graph, evidence-backed reports |
+| [**VLAN Audit Toolkit**](https://github.com/Shashankt255/vlan-audit-toolkit) | VLAN segmentation audit — 31 test cases, 8 modules, full port scan, reachability matrix, policy compliance |
+
 ## Author
 
 **[Shashankt255](https://github.com/Shashankt255)**
